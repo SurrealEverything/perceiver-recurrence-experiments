@@ -12,16 +12,19 @@ class adict(dict):
         self.__dict__ = self
 
 def pad_collate(batch):
-    max_context_sen_len = float('-inf')
-    max_context_len = float('-inf')
-    max_question_len = float('-inf')
-    for elem in batch:
-        context, question, _ = elem
-        max_context_len = max_context_len if max_context_len > len(context) else len(context)
-        max_question_len = max_question_len if max_question_len > len(question) else len(question)
-        for sen in context:
-            max_context_sen_len = max_context_sen_len if max_context_sen_len > len(sen) else len(sen)
-    max_context_len = min(max_context_len, 70)
+    # max_context_sen_len = float('-inf')
+    # max_context_len = float('-inf')
+    # max_question_len = float('-inf')
+    # for elem in batch:
+    #     context, question, _ = elem
+    #     max_context_len = max_context_len if max_context_len > len(context) else len(context)
+    #     max_question_len = max_question_len if max_question_len > len(question) else len(question)
+    #     for sen in context:
+    #         max_context_sen_len = max_context_sen_len if max_context_sen_len > len(sen) else len(sen)
+    # max_context_len = min(max_context_len, 70)
+    max_context_len = 70
+    max_context_sen_len = 13
+    max_question_len = 13
     for i, elem in enumerate(batch):
         _context, question, answer = elem
         _context = _context[-max_context_len:]
@@ -141,6 +144,7 @@ def get_unindexed_qa(raw_babi):
             tmp = line[idx+1:].split('\t')
             task["Q"] = line[:idx]
             task["A"] = tmp[1].strip()
+            # print(task["A"])
             task["S"] = [] # Supporting facts
             for num in tmp[2].split():
                 task["S"].append(id_map[int(num.strip())])
