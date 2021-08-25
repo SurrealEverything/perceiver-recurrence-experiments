@@ -165,7 +165,7 @@ class PerceiverIO(nn.Module):
     ):
         b, *_, device = *data.shape, data.device
 
-        if latents:
+        if latents is not None:
             x = latents
         else:
             x = repeat(self.latents, 'n d -> b n d', b = b)
@@ -245,11 +245,11 @@ class PositionalEncoding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+            x: Tensor, shape [batch_size, seq_len, embedding_dim]
         """
-        print('x.shape', x.shape)
-        print('self.pe[:x.size(0)].shape', self.pe[:x.size(0)].shape)
+        x = torch.transpose(x, 0, 1)
         x = x + self.pe[:x.size(0)]
+        x = torch.transpose(x, 0, 1)
         return self.dropout(x)
 
 
@@ -279,7 +279,7 @@ class PerceiverIObAbI(nn.Module):
         questions
     ):
         contexts = self.token_emb(contexts)
-        contexts = self.context_pe(contexts)
+        contexts = self.context_pe(contexts)  
         
         questions = self.token_emb(questions)
         questions = self.question_pe(questions)
