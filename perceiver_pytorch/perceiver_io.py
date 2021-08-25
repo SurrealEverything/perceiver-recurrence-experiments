@@ -4,6 +4,7 @@ from functools import wraps
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
+from torch.autograd import Variable
 
 from einops import rearrange, repeat
 import math
@@ -119,10 +120,12 @@ class PerceiverIO(nn.Module):
         cross_dim_head = 64,
         latent_dim_head = 64,
         weight_tie_layers = False,
-        self_per_cross_attn = 1
+        self_per_cross_attn = 1,
+        learn_latents=True
     ):
         super().__init__()
-        self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
+        if learn_latents:
+            self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
 
         get_cross_attn = lambda: PreNorm(latent_dim, Attention(latent_dim, dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = dim)
         get_cross_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
@@ -157,11 +160,15 @@ class PerceiverIO(nn.Module):
         self,
         data,
         mask = None,
+        latents = None,
         queries = None
     ):
         b, *_, device = *data.shape, data.device
 
-        x = repeat(self.latents, 'n d -> b n d', b = b)
+        if latents:
+            x = latents
+        else:
+            x = repeat(self.latents, 'n d -> b n d', b = b)
 
         # layers
 
@@ -240,6 +247,8 @@ class PositionalEncoding(nn.Module):
         Args:
             x: Tensor, shape [seq_len, batch_size, embedding_dim]
         """
+        print('x.shape', x.shape)
+        print('self.pe[:x.size(0)].shape', self.pe[:x.size(0)].shape)
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
@@ -256,6 +265,8 @@ class PerceiverIObAbI(nn.Module):
     ):
         super().__init__()
         
+        self.answer_query = torch.nn.Parameter(torch.randn(1, 1, num_tokens))  # (1, 1, num_tokens)
+        
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len)        
         self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len)        
@@ -265,17 +276,15 @@ class PerceiverIObAbI(nn.Module):
     def forward(
         self,
         contexts,
-        question
+        questions
     ):
         contexts = self.token_emb(contexts)
         contexts = self.context_pe(contexts)
         
-        question = self.question_pe(question)
-        question = self.question_pe(question)
+        questions = self.token_emb(questions)
+        questions = self.question_pe(questions)
         
-        answer_query = 
-        # output_query = torch.randn(1, 1, 179) # (batch, output_sequence_length, queries_dim) - should be learned
-        # output_query = Variable(output_query)
+        answer_queries = self.answer_query.expand(contexts.size(0), self.answer_query.size(1), self.answer_query.size(2)) # (?, 1, num_tokens)
         
-        logits = self.perceiver_io(contexts, queries=answer_query)
+        logits = self.perceiver_io(contexts, latents=questions, queries=answer_queries)
         return logits
