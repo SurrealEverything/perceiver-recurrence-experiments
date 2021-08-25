@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.dataloader import default_collate
 import re
 import numpy as np
+from sklearn.utils import shuffle
 
 
 class adict(dict):
@@ -15,25 +16,14 @@ class adict(dict):
 
 def pad_collate(batch):
     max_context_len = 70 * 13
-    # max_context_sen_len = 13
     max_question_len = 13
     for i, elem in enumerate(batch):
-        _context, question, answer = elem
-        # print("DATAT")
-        # print(len(_context))
-        # print(len(_context[0]))
+        _context, question, answer, task = elem
         _context = [wrd for sent in _context for wrd in sent]
-        # print('_context.shape', _context.shape)
-        # print('_context[0, 0, -4]', _context[0, 0, -4])
-        # _context = _context.reshape((_context.shape[0], _context.shape[1] * _context.shape[2]))
         _context = _context[-max_context_len:]
-        # context = np.zeros((max_context_len, max_context_sen_len))
-        # for j, sen in enumerate(_context):
-        #     context[j] = np.pad(sen, (0, max_context_sen_len - len(sen)), 'constant', constant_values=0)
         context = np.pad(_context, (0, max_context_len - len(_context)), 'constant', constant_values=0)
         question = np.pad(question, (0, max_question_len - len(question)), 'constant', constant_values=0)
-        batch[i] = (context, question, answer)
-        # print('ENNDEDNED')
+        batch[i] = (context, question, answer, task)
     return default_collate(batch)
 
 
@@ -46,8 +36,8 @@ class BabiDataset(Dataset):
         self.QA.VOCAB = {'<PAD>': 0, '<EOS>': 1}
         self.QA.IVOCAB = {0: '<PAD>', 1: '<EOS>'}
         self.train = self.get_indexed_qa(raw_train)
-        self.valid = [self.train[i][int(-len(self.train[i])/10):] for i in range(3)]
-        self.train = [self.train[i][:int(9 * len(self.train[i])/10)] for i in range(3)]
+        self.valid = [self.train[i][int(-len(self.train[i])/10):] for i in range(4)]
+        self.train = [self.train[i][:int(9 * len(self.train[i])/10)] for i in range(4)]
         self.test = self.get_indexed_qa(raw_test)
 
     def set_mode(self, mode):
@@ -63,18 +53,19 @@ class BabiDataset(Dataset):
 
     def __getitem__(self, index):
         if self.mode == 'train':
-            contexts, questions, answers = self.train
+            contexts, questions, answers, tasks = self.train
         elif self.mode == 'valid':
-            contexts, questions, answers = self.valid
+            contexts, questions, answers, tasks = self.valid
         elif self.mode == 'test':
-            contexts, questions, answers = self.test
-        return contexts[index], questions[index], answers[index]
+            contexts, questions, answers, tasks = self.test
+        return contexts[index], questions[index], answers[index], tasks[index]
 
     def get_indexed_qa(self, raw_babi):
         unindexed = get_unindexed_qa(raw_babi)
         questions = []
         contexts = []
         answers = []
+        tasks = []
         for qa in unindexed:
             context = [c.lower().split() + ['<EOS>'] for c in qa['C']]
 
@@ -95,7 +86,8 @@ class BabiDataset(Dataset):
             contexts.append(context)
             questions.append(question)
             answers.append(answer)
-        return (contexts, questions, answers)
+            tasks.append(qa['T'])
+        return (shuffle(contexts, questions, answers, tasks))
 
     def build_vocab(self, token):
         if not token in self.QA.VOCAB:
@@ -110,22 +102,18 @@ def get_raw_babi(ds_path):
         paths = glob(ds_path.format(task_id))
         for path in paths:
             if 'train' in path:
+                train += 'T' + str(task_id) + '\n'
                 with open(path, 'r') as fp:
                     train_task = fp.read() + '\n'
                     train+=train_task                    
             elif 'test' in path:
+                test += 'T' + str(task_id) + '\n'
                 with open(path, 'r') as fp:
                     test_task = fp.read() + '\n'
                     test+=test_task
-    
+                    
     return train, test
             
-# def build_vocab(raw_babi):
-#     lowered = raw_babi.lower()
-#     tokens = re.findall('[a-zA-Z]+', lowered)
-#     types = set(tokens)
-#     return types
-
 def get_unindexed_qa(raw_babi):
     tasks = []
     task = None
@@ -133,9 +121,12 @@ def get_unindexed_qa(raw_babi):
     for i, line in enumerate(babi):
         if len(line) == 0:
             continue
+        if line[0] == 'T':
+            task_id = int(line[1:])
+            continue
         id = int(line[0:line.find(' ')])
         if id == 1:
-            task = {"C": "", "Q": "", "A": "", "S": ""}
+            task = {"C": "", "Q": "", "A": "", "S": "", 'T': ""}
             counter = 0
             id_map = {}
 
@@ -157,6 +148,7 @@ def get_unindexed_qa(raw_babi):
                 task["S"].append(id_map[int(num.strip())])
             tc = task.copy()
             tc['C'] = tc['C'].split('<line>')[:-1]
+            tc['T'] = task_id
             tasks.append(tc)
     return tasks
 

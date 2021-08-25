@@ -230,7 +230,6 @@ class PerceiverLM(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -268,8 +267,8 @@ class PerceiverIObAbI(nn.Module):
         self.answer_query = torch.nn.Parameter(torch.randn(1, 1, num_tokens))  # (1, 1, num_tokens)
         
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len)        
-        self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len)        
+        self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len, dropout=0)        
+        self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len, dropout=0)        
 
         self.perceiver_io = PerceiverIO(dim = dim, **kwargs)
 
