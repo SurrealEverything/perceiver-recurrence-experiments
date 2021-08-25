@@ -6,6 +6,7 @@ from torch import nn, einsum
 import torch.nn.functional as F
 
 from einops import rearrange, repeat
+import math
 
 # helpers
 
@@ -67,6 +68,7 @@ class FeedForward(nn.Module):
 class Attention(nn.Module):
     def __init__(self, query_dim, context_dim = None, heads = 8, dim_head = 64):
         super().__init__()
+        
         inner_dim = dim_head * heads
         context_dim = default(context_dim, query_dim)
         self.scale = dim_head ** -0.5
@@ -217,4 +219,63 @@ class PerceiverLM(nn.Module):
         x = x + pos_emb
 
         logits = self.perceiver_io(x, mask = mask, queries = x)
+        return logits
+
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
+
+class PerceiverIObAbI(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        num_tokens,
+        context_max_seq_len,
+        question_max_seq_len,
+        **kwargs
+    ):
+        super().__init__()
+        
+        self.token_emb = nn.Embedding(num_tokens, dim)
+        self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len)        
+        self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len)        
+
+        self.perceiver_io = PerceiverIO(dim = dim, **kwargs)
+
+    def forward(
+        self,
+        contexts,
+        question
+    ):
+        contexts = self.token_emb(contexts)
+        contexts = self.context_pe(contexts)
+        
+        question = self.question_pe(question)
+        question = self.question_pe(question)
+        
+        answer_query = 
+        # output_query = torch.randn(1, 1, 179) # (batch, output_sequence_length, queries_dim) - should be learned
+        # output_query = Variable(output_query)
+        
+        logits = self.perceiver_io(contexts, queries=answer_query)
         return logits

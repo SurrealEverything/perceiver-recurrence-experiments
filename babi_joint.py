@@ -6,40 +6,42 @@ from torch.utils.data.dataloader import default_collate
 import re
 import numpy as np
 
+
 class adict(dict):
     def __init__(self, *av, **kav):
         dict.__init__(self, *av, **kav)
         self.__dict__ = self
 
+
 def pad_collate(batch):
-    # max_context_sen_len = float('-inf')
-    # max_context_len = float('-inf')
-    # max_question_len = float('-inf')
-    # for elem in batch:
-    #     context, question, _ = elem
-    #     max_context_len = max_context_len if max_context_len > len(context) else len(context)
-    #     max_question_len = max_question_len if max_question_len > len(question) else len(question)
-    #     for sen in context:
-    #         max_context_sen_len = max_context_sen_len if max_context_sen_len > len(sen) else len(sen)
-    # max_context_len = min(max_context_len, 70)
-    max_context_len = 70
-    max_context_sen_len = 13
+    max_context_len = 70 * 13
+    # max_context_sen_len = 13
     max_question_len = 13
     for i, elem in enumerate(batch):
         _context, question, answer = elem
+        # print("DATAT")
+        # print(len(_context))
+        # print(len(_context[0]))
+        _context = [wrd for sent in _context for wrd in sent]
+        # print('_context.shape', _context.shape)
+        # print('_context[0, 0, -4]', _context[0, 0, -4])
+        # _context = _context.reshape((_context.shape[0], _context.shape[1] * _context.shape[2]))
         _context = _context[-max_context_len:]
-        context = np.zeros((max_context_len, max_context_sen_len))
-        for j, sen in enumerate(_context):
-            context[j] = np.pad(sen, (0, max_context_sen_len - len(sen)), 'constant', constant_values=0)
+        # context = np.zeros((max_context_len, max_context_sen_len))
+        # for j, sen in enumerate(_context):
+        #     context[j] = np.pad(sen, (0, max_context_sen_len - len(sen)), 'constant', constant_values=0)
+        context = np.pad(_context, (0, max_context_len - len(_context)), 'constant', constant_values=0)
         question = np.pad(question, (0, max_question_len - len(question)), 'constant', constant_values=0)
         batch[i] = (context, question, answer)
+        # print('ENNDEDNED')
     return default_collate(batch)
 
+
 class BabiDataset(Dataset):
-    def __init__(self, task_id, mode='train', ds_path='data/en-10k/qa{}_*', vocab_path='dataset/babi{}_vocab.pkl'):
-        self.vocab_path = vocab_path.format(task_id)
+    def __init__(self, mode='train', ds_path='data/en-10k/qa{}_*', vocab_path='dataset/babi_vocab.pkl'):
+        self.vocab_path = vocab_path
         self.mode = mode
-        raw_train, raw_test = get_raw_babi(task_id, ds_path=ds_path)
+        raw_train, raw_test = get_raw_babi(ds_path=ds_path)
         self.QA = adict()
         self.QA.VOCAB = {'<PAD>': 0, '<EOS>': 1}
         self.QA.IVOCAB = {0: '<PAD>', 1: '<EOS>'}
@@ -81,14 +83,14 @@ class BabiDataset(Dataset):
                     self.build_vocab(token)
             context = [[self.QA.VOCAB[token] for token in sentence] for sentence in context]
             question = qa['Q'].lower().split() + ['<EOS>']
-
+            
             for token in question:
                 self.build_vocab(token)
+
             question = [self.QA.VOCAB[token] for token in question]
 
             self.build_vocab(qa['A'].lower())
             answer = self.QA.VOCAB[qa['A'].lower()]
-
 
             contexts.append(context)
             questions.append(question)
@@ -100,31 +102,37 @@ class BabiDataset(Dataset):
             next_index = len(self.QA.VOCAB)
             self.QA.VOCAB[token] = next_index
             self.QA.IVOCAB[next_index] = token
-
-
-def get_raw_babi(taskid, ds_path):
-    paths = glob(ds_path.format(taskid))
-    for path in paths:
-        if 'train' in path:
-            with open(path, 'r') as fp:
-                train = fp.read()
-        elif 'test' in path:
-            with open(path, 'r') as fp:
-                test = fp.read()
+   
+def get_raw_babi(ds_path):
+    train=''
+    test=''
+    for task_id in range(1, 21):
+        paths = glob(ds_path.format(task_id))
+        for path in paths:
+            if 'train' in path:
+                with open(path, 'r') as fp:
+                    train_task = fp.read() + '\n'
+                    train+=train_task                    
+            elif 'test' in path:
+                with open(path, 'r') as fp:
+                    test_task = fp.read() + '\n'
+                    test+=test_task
+    
     return train, test
+            
+# def build_vocab(raw_babi):
+#     lowered = raw_babi.lower()
+#     tokens = re.findall('[a-zA-Z]+', lowered)
+#     types = set(tokens)
+#     return types
 
-def build_vocab(raw_babi):
-    lowered = raw_babi.lower()
-    tokens = re.findall('[a-zA-Z]+', lowered)
-    types = set(tokens)
-    return types
-
-# adapted from https://github.com/YerevaNN/Dynamic-memory-networks-in-Theano/
 def get_unindexed_qa(raw_babi):
     tasks = []
     task = None
     babi = raw_babi.strip().split('\n')
     for i, line in enumerate(babi):
+        if len(line) == 0:
+            continue
         id = int(line[0:line.find(' ')])
         if id == 1:
             task = {"C": "", "Q": "", "A": "", "S": ""}
@@ -144,7 +152,6 @@ def get_unindexed_qa(raw_babi):
             tmp = line[idx+1:].split('\t')
             task["Q"] = line[:idx]
             task["A"] = tmp[1].strip()
-            # print(task["A"])
             task["S"] = [] # Supporting facts
             for num in tmp[2].split():
                 task["S"].append(id_map[int(num.strip())])
@@ -153,9 +160,5 @@ def get_unindexed_qa(raw_babi):
             tasks.append(tc)
     return tasks
 
-if __name__ == '__main__':
-    dset_train = BabiDataset(20, is_train=True)
-    train_loader = DataLoader(dset_train, batch_size=2, shuffle=True, collate_fn=pad_collate)
-    for batch_idx, data in enumerate(train_loader):
-        contexts, questions, answers = data
-        break
+# babi_train = BabiDataset(ds_path='/home/gabriel/Documents/datasets/bAbi/en/qa{}_*', 
+#                          vocab_path='/home/gabriel/Documents/datasets/bAbi/en/babi{}_vocab.pkl')
