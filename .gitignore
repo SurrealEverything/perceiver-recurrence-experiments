@@ -136,3 +136,4 @@ log.txt
 
 checkpoints/
 runs/
+torchsummary/
