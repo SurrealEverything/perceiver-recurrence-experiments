@@ -104,6 +104,33 @@ class Attention(nn.Module):
         return self.to_out(out)
 
 # main class
+class GRUGating(nn.Module):
+    def __init__(self, dim, fn):
+        super().__init__()
+        self.dim = dim
+        self.fn = fn
+        self.gru = nn.GRUCell(dim, dim)
+
+    def forward(self, x, **kwargs):
+        b, dim = x.shape[0], self.dim
+        y = self.fn(x, **kwargs)
+
+        gated_output = self.gru(
+            rearrange(y, '... d -> (...) d'),
+            rearrange(x, '... d -> (...) d')
+        )
+
+        gated_output = rearrange(gated_output, '(b n) d -> b n d', b = b)
+        return gated_output
+
+class Residual(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        return x + self.fn(x, **kwargs)
+
 
 class PerceiverIO(nn.Module):
     def __init__(
@@ -129,10 +156,10 @@ class PerceiverIO(nn.Module):
 
         get_cross_attn = lambda: PreNorm(latent_dim, Attention(latent_dim, dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = dim)
         get_cross_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
-        get_latent_attn = lambda: PreNorm(latent_dim, Attention(latent_dim, heads = latent_heads, dim_head = latent_dim_head))
-        get_latent_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
+        get_latent_attn = lambda: PreNorm(latent_dim, Residual(GRUGating(latent_dim, PreNorm(latent_dim, Attention(latent_dim, heads = latent_heads, dim_head = latent_dim_head)))))
+        # get_latent_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
 
-        get_cross_attn, get_cross_ff, get_latent_attn, get_latent_ff = map(cache_fn, (get_cross_attn, get_cross_ff, get_latent_attn, get_latent_ff))
+        get_cross_attn, get_cross_ff, get_latent_attn = map(cache_fn, (get_cross_attn, get_cross_ff, get_latent_attn))
 
         self.layers = nn.ModuleList([])
         for i in range(depth):
@@ -142,10 +169,10 @@ class PerceiverIO(nn.Module):
             self_attns = nn.ModuleList([])
 
             for _ in range(self_per_cross_attn):
-                self_attns.append(nn.ModuleList([
-                    get_latent_attn(**cache_args),
-                    get_latent_ff(**cache_args)
-                ]))
+                self_attns.append(
+                    get_latent_attn(**cache_args)#,
+                    # get_latent_ff(**cache_args)
+                )
 
             self.layers.append(nn.ModuleList([
                 get_cross_attn(**cache_args),
@@ -178,10 +205,14 @@ class PerceiverIO(nn.Module):
 
             # gru = None
             
+            for self_attn in self_attns:
+                x = self_attn(x)
+                # x = self_ff(x) + x
+            
             # vanilla
-            for self_attn, self_ff in self_attns:
-                x = self_attn(x) + x
-                x = self_ff(x) + x
+            # for self_attn, self_ff in self_attns:
+            #     x = self_attn(x) + x
+            #     x = self_ff(x) + x
             
             # # lucidrains
             # for self_attn, self_ff in self_attns:

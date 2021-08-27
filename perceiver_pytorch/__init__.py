@@ -1,2 +1,3 @@
 from perceiver_pytorch.perceiver_pytorch import Perceiver
-from perceiver_pytorch.perceiver_io import PerceiverIO, PerceiverLM, PerceiverIObAbI
+from perceiver_pytorch.perceiver_io import PerceiverIO, PerceiverLM, PerceiverIObAbI, PerceiverIObAbInq
+from perceiver_pytorch.perceiver_io_gated import PerceiverIO, PerceiverLM, PerceiverIObAbI, PerceiverIObAbInq
