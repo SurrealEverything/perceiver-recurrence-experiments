@@ -137,3 +137,4 @@ log.txt
 checkpoints/
 runs/
 torchsummary/
+perceiver_pytorch.zip

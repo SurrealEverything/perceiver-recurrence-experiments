@@ -15,15 +15,16 @@ class adict(dict):
 
 
 def pad_collate(batch):
-    max_context_len = 70 * 13
-    max_question_len = 13
+    max_context_len = 70 * 13 + 13
+    # max_question_len = 13
     for i, elem in enumerate(batch):
         _context, question, answer, task = elem
         _context = [wrd for sent in _context for wrd in sent]
+        _context.extend([wrd for wrd in question])
         _context = _context[-max_context_len:]
         context = np.pad(_context, (0, max_context_len - len(_context)), 'constant', constant_values=0)
-        question = np.pad(question, (0, max_question_len - len(question)), 'constant', constant_values=0)
-        batch[i] = (context, question, answer, task)
+        # question = np.pad(question, (0, max_question_len - len(question)), 'constant', constant_values=0)
+        batch[i] = (context, answer, task)
     return default_collate(batch)
 
 
@@ -131,7 +132,7 @@ def get_unindexed_qa(raw_babi):
             id_map = {}
 
         line = line.strip()
-        line = line.replace('.', ' . ')
+        line = line.replace('.', '')
         line = line[line.find(' ')+1:]
         # if not a question
         if line.find('?') == -1:

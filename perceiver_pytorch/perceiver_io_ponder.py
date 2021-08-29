@@ -121,9 +121,14 @@ class PerceiverIO(nn.Module):
         latent_dim_head = 64,
         weight_tie_layers = False,
         self_per_cross_attn = 1,
-        learn_latents=True
+        learn_latents = True
     ):
         super().__init__()
+        
+        self.max_steps = depth
+        self.lambda_prob = nn.Sigmoid()
+        self.logits_dim = logits_dim
+                
         if learn_latents:
             self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
 
@@ -131,30 +136,35 @@ class PerceiverIO(nn.Module):
         get_cross_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
         get_latent_attn = lambda: PreNorm(latent_dim, Attention(latent_dim, heads = latent_heads, dim_head = latent_dim_head))
         get_latent_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
+        get_decoder_ca = lambda: PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
+        get_to_logits = lambda: nn.Linear(queries_dim, logits_dim + 1) if exists(logits_dim) else lambda: nn.Identity()
 
-        get_cross_attn, get_cross_ff, get_latent_attn, get_latent_ff = map(cache_fn, (get_cross_attn, get_cross_ff, get_latent_attn, get_latent_ff))
+        get_latent_attn, get_latent_ff, get_decoder_ca, get_to_logits = map(cache_fn, (get_latent_attn, get_latent_ff, get_decoder_ca, get_to_logits))
 
+        self.encoder_cross_attn = nn.ModuleList([
+            get_cross_attn(),
+            get_cross_ff()
+        ])
+        
         self.layers = nn.ModuleList([])
         for i in range(depth):
             should_cache = i > 0 and weight_tie_layers
             cache_args = {'_cache': should_cache}
 
-            self_attns = nn.ModuleList([])
+            self_attns = nn.ModuleList([
+                get_latent_attn(**cache_args),
+                get_latent_ff(**cache_args)
+            ])
 
-            for _ in range(self_per_cross_attn):
-                self_attns.append(nn.ModuleList([
-                    get_latent_attn(**cache_args),
-                    get_latent_ff(**cache_args)
-                ]))
-
+            decoder_self_atnns  = nn.ModuleList([
+                get_decoder_ca(**cache_args),
+                get_to_logits(**cache_args)
+            ])
+            
             self.layers.append(nn.ModuleList([
-                get_cross_attn(**cache_args),
-                get_cross_ff(**cache_args),
-                self_attns
+                self_attns,
+                decoder_self_atnns
             ]))
-
-        self.decoder_cross_attn = PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
-        self.to_logits = nn.Linear(queries_dim, logits_dim) if exists(logits_dim) else nn.Identity()
 
     def forward(
         self,
@@ -165,46 +175,101 @@ class PerceiverIO(nn.Module):
     ):
         b, *_, device = *data.shape, data.device
 
+        p = []
+        y = []
+        un_halted_prob = data.new_ones((b, 1))
+        halted = data.new_zeros((b, 1))
+        p_m = data.new_zeros((b, 1))
+        y_m = data.new_zeros((b, self.logits_dim))
+
         if latents is not None:
             x = latents
         else:
             x = repeat(self.latents, 'n d -> b n d', b = b)
 
-        # layers
-
-        for cross_attn, cross_ff, self_attns in self.layers:
-            x = cross_attn(x, context = data, mask = mask) + x
-            x = cross_ff(x) + x
-
-            # gru = None
-            
-            # vanilla
-            for self_attn, self_ff in self_attns:
-                x = self_attn(x) + x
-                x = self_ff(x) + x
-            
-            # # lucidrains
-            # for self_attn, self_ff in self_attns:
-            #     x = gru(self_attn(x), x)
-            #     x = self_ff(x) + x
-
-            # # ours
-            # for self_attn, self_ff in self_attns:
-            #     x = gru(self_attn(x), x)
-
-        if not exists(queries):
-            return x
-
-        # cross attend from decoder queries to latents
+        cross_attn, cross_ff = self.encoder_cross_attn
+        x = cross_attn(x, context = data, mask = mask) + x
+        x = cross_ff(x) + x
         
-        latents = self.decoder_cross_attn(queries, context = x)
+        for n in range(self.max_steps): 
+            self_attns, decoder_self_atnns = self.layers[n]
+            self_attn, self_ff = self_attns
+            x = self_attn(x) + x
+            x = self_ff(x) + x       
+            if not exists(queries):
+                latents = x
+            # cross attend from decoder queries to latents
+            decoder_cross_attn, to_logits = decoder_self_atnns
+            latents = torch.squeeze(decoder_cross_attn(queries, context = x))
+            logits = to_logits(latents)
+            
+            if n + 1 == self.max_steps:
+                lambda_n = data.new_ones(b, 1)
+            else:
+                lambda_n = self.lambda_prob(logits[:, 0])[:, None]
+    
+            y_n = logits[:, 1:]
+            p_n = un_halted_prob * lambda_n
+            un_halted_prob = un_halted_prob * (1 - lambda_n)
+            halt = torch.bernoulli(lambda_n) * (1 - halted)
+            
+            p.append(p_n)
+            y.append(y_n)
+        
+            p_m = p_m * (1 - halt) + p_n * halt
+            y_m = y_m * (1 - halt) + y_n * halt
+        
+            halted = halted + halt
+            
+            if not self.training and halted.sum() == b:
+                break
+            
+        return torch.squeeze(torch.stack(p)), torch.stack(y), p_m, y_m
 
-        # final linear out
 
-        return self.to_logits(latents)
-
+class ReconstructionLoss(nn.Module):
+    def __init__(self, loss_func: nn.Module):
+        super().__init__()
+        self.loss_func = loss_func
+        
+    def forward(self, p: torch.Tensor, y_hat: torch.Tensor, y: torch.Tensor):
+        total_loss = p.new_tensor(0.)
+        for n in range(p.shape[0]):
+            loss = (p[n] * self.loss_func(y_hat[n], y)).sum()
+            # print('should sum?', loss.shape)
+            total_loss = total_loss + loss
+        return total_loss
+    
+        
+class RegularizationLoss(nn.Module):        
+    def __init__(self, lambda_p: float, max_steps: int):    
+        super().__init__()
+        p_g = torch.zeros((max_steps,))
+        not_halted = 1.
+        for k in range(max_steps):
+            p_g[k] = not_halted * lambda_p
+            not_halted = not_halted * (1 - lambda_p)    
+        self.p_g = nn.Parameter(p_g, requires_grad=False)
+        self.kl_div = nn.KLDivLoss(reduction='sum')
+        
+    def forward(self, p: torch.Tensor):
+        p = torch.squeeze(p).transpose(0, 1)
+        p_g = self.p_g[None, :p.shape[1]].expand_as(p)
+        return self.kl_div(p.log(), p_g)
+    
+    
+class PonderLoss(nn.Module):
+    def __init__(self, loss_func: nn.Module, lambda_p: float, max_steps: int, beta: float):
+        super().__init__()
+        self.loss_rec = ReconstructionLoss(loss_func)
+        self.loss_reg = RegularizationLoss(lambda_p, max_steps)
+        self.beta = beta
+    
+    def forward(self, p: torch.Tensor, y_hat: torch.Tensor, y: torch.Tensor):
+        return self.loss_rec(p, y_hat, y) + self.beta * self.loss_reg(p)
+    
+    
 # Perceiver LM example
-
 class PerceiverLM(nn.Module):
     def __init__(
         self,
@@ -276,11 +341,11 @@ class PerceiverIObAbI(nn.Module):
     ):
         super().__init__()
         
-        self.answer_query = torch.nn.Parameter(torch.randn(1, 32, num_tokens))  # (1, 1, num_tokens)
+        self.answer_query = torch.nn.Parameter(torch.randn(1, 1, num_tokens))  # (1, 1, num_tokens)
         
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len)        
-        self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len)        
+        self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len, dropout=0)        
+        self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len, dropout=0)        
 
         self.perceiver_io = PerceiverIO(dim = dim, **kwargs)
 
@@ -335,15 +400,15 @@ class PerceiverIObAbInq(nn.Module):
         return logits
     
     
-class PonderPerceiver(nn.Module):
-    def __init__(self, max_steps, n_hidden, **kwargs):
-        self.max_steps = max_steps
-        self.n_hidden = n_hidden
-        super().__init__()
+# class AdaPerceiver(nn.Module):
+#     def __init__(self, max_steps, n_hidden, **kwargs):
+#         self.max_steps = max_steps
+#         self.n_hidden = n_hidden
+#         super().__init__()
         
         
         
-        self.perceiver_io = PerceiverIObAbInq(**kwargs)
+#         self.perceiver_io = PerceiverIObAbInq(**kwargs)
         
-    def forward(self, x):
-        return self.perceiver_io(x)
+#     def forward(self, x):
+#         return self.perceiver_io(x)

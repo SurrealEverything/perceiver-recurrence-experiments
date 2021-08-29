@@ -131,30 +131,35 @@ class PerceiverIO(nn.Module):
         get_cross_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
         get_latent_attn = lambda: PreNorm(latent_dim, Attention(latent_dim, heads = latent_heads, dim_head = latent_dim_head))
         get_latent_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
+        get_decoder_ca = lambda: PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
+        get_to_logits = lambda: nn.Linear(queries_dim, logits_dim + 1) if exists(logits_dim) else lambda: nn.Identity()
 
-        get_cross_attn, get_cross_ff, get_latent_attn, get_latent_ff = map(cache_fn, (get_cross_attn, get_cross_ff, get_latent_attn, get_latent_ff))
+        get_latent_attn, get_latent_ff, get_decoder_ca, get_to_logits = map(cache_fn, (get_latent_attn, get_latent_ff, get_decoder_ca, get_to_logits))
 
+        self.encoder_cross_attn = nn.ModuleList([
+            get_cross_attn(),
+            get_cross_ff()
+        ])
+        
         self.layers = nn.ModuleList([])
         for i in range(depth):
             should_cache = i > 0 and weight_tie_layers
             cache_args = {'_cache': should_cache}
 
-            self_attns = nn.ModuleList([])
+            self_attns = nn.ModuleList([
+                get_latent_attn(**cache_args),
+                get_latent_ff(**cache_args)
+            ])
 
-            for _ in range(self_per_cross_attn):
-                self_attns.append(nn.ModuleList([
-                    get_latent_attn(**cache_args),
-                    get_latent_ff(**cache_args)
-                ]))
-
+            decoder_self_atnns  = nn.ModuleList([
+                get_decoder_ca(**cache_args),
+                get_to_logits(**cache_args)
+            ])
+            
             self.layers.append(nn.ModuleList([
-                get_cross_attn(**cache_args),
-                get_cross_ff(**cache_args),
-                self_attns
+                self_attns,
+                decoder_self_atnns
             ]))
-
-        self.decoder_cross_attn = PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
-        self.to_logits = nn.Linear(queries_dim, logits_dim) if exists(logits_dim) else nn.Identity()
 
     def forward(
         self,
@@ -170,38 +175,25 @@ class PerceiverIO(nn.Module):
         else:
             x = repeat(self.latents, 'n d -> b n d', b = b)
 
+        cross_attn, cross_ff = self.encoder_cross_attn
+        x = cross_attn(x, context = data, mask = mask) + x
+        x = cross_ff(x) + x
         # layers
 
-        for cross_attn, cross_ff, self_attns in self.layers:
-            x = cross_attn(x, context = data, mask = mask) + x
-            x = cross_ff(x) + x
-
-            # gru = None
+        for n in range(len(self.layers)):
+            self_attns, decoder_self_atnns = self.layers[n]
+            self_attn, self_ff = self_attns
+            x = self_attn(x) + x
+            x = self_ff(x) + x       
             
-            # vanilla
-            for self_attn, self_ff in self_attns:
-                x = self_attn(x) + x
-                x = self_ff(x) + x
-            
-            # # lucidrains
-            # for self_attn, self_ff in self_attns:
-            #     x = gru(self_attn(x), x)
-            #     x = self_ff(x) + x
-
-            # # ours
-            # for self_attn, self_ff in self_attns:
-            #     x = gru(self_attn(x), x)
-
         if not exists(queries):
-            return x
-
+                latents = x
         # cross attend from decoder queries to latents
-        
-        latents = self.decoder_cross_attn(queries, context = x)
+        decoder_cross_attn, to_logits = decoder_self_atnns
+        latents = torch.squeeze(decoder_cross_attn(queries, context = x))
+        logits = to_logits(latents)
 
-        # final linear out
-
-        return self.to_logits(latents)
+        return logits
 
 # Perceiver LM example
 
@@ -276,11 +268,11 @@ class PerceiverIObAbI(nn.Module):
     ):
         super().__init__()
         
-        self.answer_query = torch.nn.Parameter(torch.randn(1, 32, num_tokens))  # (1, 1, num_tokens)
+        self.answer_query = torch.nn.Parameter(torch.randn(1, 1, num_tokens))  # (1, 1, num_tokens)
         
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len)        
-        self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len)        
+        self.context_pe = PositionalEncoding(d_model=dim, max_len=context_max_seq_len, dropout=0)        
+        self.question_pe = PositionalEncoding(d_model=dim, max_len=question_max_seq_len, dropout=0)        
 
         self.perceiver_io = PerceiverIO(dim = dim, **kwargs)
 
