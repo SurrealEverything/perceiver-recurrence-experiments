@@ -4,4 +4,4 @@ from perceiver_pytorch.perceiver_io_gated import PerceiverIO, PerceiverLM, Perce
 from perceiver_pytorch.perceiver_io_gated_residual import PerceiverIO, PerceiverLM, PerceiverIObAbI, PerceiverIObAbInq
 from perceiver_pytorch.perceiver_io_ponder import PerceiverIO, PerceiverLM, PerceiverIObAbI, PerceiverIObAbInq
 from perceiver_pytorch.perceiver_io_nocross import PerceiverIO, PerceiverLM, PerceiverIObAbI, PerceiverIObAbInq
-from perceiver_pytorch.perceiver_io_best import PerceiverIO, PerceiverLM, PerceiverIObAbI, PerceiverIObAbInq
+from perceiver_pytorch.perceiver_io_best import PerceiverIObAbI

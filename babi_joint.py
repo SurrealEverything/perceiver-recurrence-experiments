@@ -8,14 +8,30 @@ import numpy as np
 from sklearn.utils import shuffle
 
 
+output_vocab = eval('{0: 2, 1: 6, 2: 9, 3: 15, 4: 16, 5: 19, 6: 20, 7: 22, 8: 25, 9: 154, 10: 155, 11: 156, 12: 29, 13: 157, 14: 158, 15: 160, 16: 161, 17: 162, 18: 159, 19: 164, 20: 163, 21: 165, 22: 167, 23: 43, 24: 45, 25: 173, 26: 175, 27: 177, 28: 49, 29: 54, 30: 55, 31: 60, 32: 61, 33: 62, 34: 63, 35: 64, 36: 65, 37: 66, 38: 67, 39: 68, 40: 69, 41: 70, 42: 71, 43: 72, 44: 73, 45: 74, 46: 75, 47: 76, 48: 80, 49: 82, 50: 83, 51: 84, 52: 106, 53: 108, 54: 112, 55: 113, 56: 117, 57: 120, 58: 126, 59: 127}')
+input_vocab = {v: k for k, v in output_vocab.items()}
+
 class adict(dict):
     def __init__(self, *av, **kav):
         dict.__init__(self, *av, **kav)
         self.__dict__ = self
 
 
+def pad_collate_question(batch):
+    max_context_len = 783
+    max_question_len = 13
+    for i, elem in enumerate(batch):
+        _context, question, answer, task = elem
+        _context = [wrd for sent in _context for wrd in sent]
+        _context = _context[-max_context_len:]
+        context = np.pad(_context, (0, max_context_len - len(_context)), 'constant', constant_values=0)
+        question = np.pad(question, (0, max_question_len - len(question)), 'constant', constant_values=0)
+        answer = input_vocab[answer]
+        batch[i] = (context, question, answer, task)
+    return default_collate(batch)
+
 def pad_collate(batch):
-    max_context_len = 70 * 13 + 13
+    max_context_len = 783 + 13
     # max_question_len = 13
     for i, elem in enumerate(batch):
         _context, question, answer, task = elem
