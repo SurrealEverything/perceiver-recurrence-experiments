@@ -32,16 +32,22 @@ def cache_fn(f):
 
 # helper classes
 
-class PostNorm(nn.Module):
-    def __init__(self, dim, fn):
+class PreNorm(nn.Module):
+    def __init__(self, dim, fn, context_dim = None):
         super().__init__()
         self.fn = fn
         self.norm = nn.LayerNorm(dim)
+        self.norm_context = nn.LayerNorm(context_dim) if exists(context_dim) else None
 
     def forward(self, x, **kwargs):
-        x = self.fn(x, **kwargs)
-        
-        return self.norm(x)
+        x = self.norm(x)
+
+        if exists(self.norm_context):
+            context = kwargs['context']
+            normed_context = self.norm_context(context)
+            kwargs.update(context = normed_context)
+
+        return self.fn(x, **kwargs)
 
 class Residual(nn.Module):
     def __init__(self, fn):
@@ -156,19 +162,20 @@ class PerceiverIO(nn.Module):
         self.latents = nn.Parameter(torch.randn(num_latents, latent_queries_dim))
 
         # more cross heads here
-        get_query_cross_attn = lambda: PostNorm(input_queries_dim, Attention(input_queries_dim, dim, heads = input_cross_heads, dim_head=input_cross_dim_head))
-        get_query_cross_ff = lambda: PostNorm(input_queries_dim, Residual(FeedForward(input_queries_dim)))
+        get_query_cross_attn = lambda: PreNorm(input_queries_dim, Attention(input_queries_dim, dim, heads = input_cross_heads, dim_head=input_cross_dim_head))
+        get_query_cross_ff = lambda: PreNorm(input_queries_dim, FeedForward(input_queries_dim))
 
-        get_cross_attn = lambda: PostNorm(latent_queries_dim, Attention(latent_queries_dim, input_queries_dim, heads = cross_heads, dim_head = cross_dim_head))
-        get_cross_ff = lambda: PostNorm(latent_queries_dim, Residual(FeedForward(latent_queries_dim)))
+        get_cross_attn = lambda: PreNorm(latent_queries_dim, Attention(latent_queries_dim, input_queries_dim, heads = cross_heads, dim_head = cross_dim_head))
+        get_cross_ff = lambda: PreNorm(latent_queries_dim, FeedForward(latent_queries_dim))
         # get_latent_attn = lambda: PreNorm(latent_queries_dim, Attention(latent_queries_dim, heads = latent_heads, dim_head = latent_queries_dim_head))
         # get_latent_ff = lambda: PreNorm(latent_queries_dim, FeedForward(latent_queries_dim))
-        get_latent_attn = lambda: GRUGating(latent_queries_dim, PostNorm(latent_queries_dim, Residual(Attention(latent_queries_dim, heads = latent_heads, dim_head = latent_queries_dim_head))))
-        get_decoder_ca = lambda: PostNorm(output_queries_dim, Residual(Attention(output_queries_dim, latent_queries_dim, heads = cross_heads, dim_head = cross_dim_head)))
+        get_latent_attn = lambda: PreNorm(latent_queries_dim, GRUGating(latent_queries_dim, Residual(PreNorm(latent_queries_dim, Attention(latent_queries_dim, heads = latent_heads, dim_head = latent_queries_dim_head)))))
+        get_decoder_ca = lambda: PreNorm(output_queries_dim, Attention(output_queries_dim, latent_queries_dim, heads = cross_heads, dim_head = cross_dim_head))
+        get_decoder_ff = lambda: PreNorm(output_queries_dim, FeedForward(output_queries_dim))
         get_to_logits = lambda: nn.Linear(num_output_queries * output_queries_dim, logits_dim + 1) if exists(logits_dim) else lambda: nn.Identity()
 
         # get_latent_attn, get_latent_ff, get_decoder_ca, get_to_logits = map(cache_fn, (get_latent_attn, get_latent_ff, get_decoder_ca, get_to_logits))
-        get_latent_attn, get_decoder_ca, get_to_logits = map(cache_fn, (get_latent_attn, get_decoder_ca, get_to_logits))
+        get_latent_attn, get_decoder_ca, get_decoder_ff, get_to_logits = map(cache_fn, (get_latent_attn, get_decoder_ca, get_decoder_ff, get_to_logits))
 
         self.encoder_cross_attn = nn.ModuleList([
             get_query_cross_attn(),
@@ -179,12 +186,12 @@ class PerceiverIO(nn.Module):
         
         self.layers = nn.ModuleList([])
         for i in range(depth):
-            should_cache = weight_tie_layers  # and i > 0 
-            cache_args = {'_cache': should_cache}
+            cache_args = {'_cache': weight_tie_layers and i>0}
 
             self.layers.append(nn.ModuleList([
                 get_latent_attn(**cache_args),
                 get_decoder_ca(**cache_args),
+                get_decoder_ff(**cache_args),
                 get_to_logits(**cache_args)
             ]))
 
@@ -206,18 +213,19 @@ class PerceiverIO(nn.Module):
 
         latents = repeat(self.latents, 'n d -> b n d', b = b)
         query_cross_attn, query_cross_ff, cross_attn, cross_ff = self.encoder_cross_attn
-        x = query_cross_attn(input_queries, context = context, mask = mask)
-        x = query_cross_ff(x)
-        x = cross_attn(latents, context = context, mask = mask)
-        x = cross_ff(x)
+        x = query_cross_attn(input_queries, context = context, mask = mask) + input_queries
+        x = query_cross_ff(x) + x
+        x = cross_attn(latents, context = context, mask = mask) + latents
+        x = cross_ff(x) + x
         
         for n in range(self.max_steps): 
-            self_attns, decoder_cross_attn, to_logits = self.layers[n]  
-            x = self_attns(x)
+            self_attns, decoder_cross_attn, decoder_ff, to_logits = self.layers[n]  
+            x = self_attns(x) + x
             # if not exists(queries):
             #     latents = x
             # cross attend from decoder queries to latents
-            latents = torch.squeeze(decoder_cross_attn(output_queries, context = x))
+            latents = decoder_cross_attn(output_queries, context = x)
+            latents = decoder_ff(latents) + latents
             latents = rearrange(latents, 'b n d -> b (n d)')
             logits = to_logits(latents)
             
@@ -253,8 +261,7 @@ class ReconstructionLoss(nn.Module):
     def forward(self, p: torch.Tensor, y_hat: torch.Tensor, y: torch.Tensor):
         total_loss = p.new_tensor(0.)
         for n in range(p.shape[0]):
-            loss = (p[n] * self.loss_func(y_hat[n], y))[0]
-            # print('should sum?', loss.shape)
+            loss = (p[n] * self.loss_func(y_hat[n], y)).sum()
             total_loss = total_loss + loss
         return total_loss
     
@@ -273,7 +280,6 @@ class RegularizationLoss(nn.Module):
     def forward(self, p: torch.Tensor):
         p = torch.squeeze(p).transpose(0, 1)
         p_g = self.p_g[None, :p.shape[1]].expand_as(p)
-        # eps = 1e-4
         return self.kl_div((p).log(), p_g)
     
     

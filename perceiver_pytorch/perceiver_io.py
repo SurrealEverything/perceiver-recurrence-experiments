@@ -176,21 +176,22 @@ class PerceiverIO(nn.Module):
             x = cross_attn(x, context = data, mask = mask) + x
             x = cross_ff(x) + x
 
+            x = self_attns(x) + x
             # gru = None
-            
-            # vanilla
-            for self_attn, self_ff in self_attns:
-                x = self_attn(x) + x
-                x = self_ff(x) + x
-            
-            # # lucidrains
+            # norm = None
+            # # # vanilla
             # for self_attn, self_ff in self_attns:
-            #     x = gru(self_attn(x), x)
-            #     x = self_ff(x) + x
+            #     x = self_attn(norm(x)) + x
+            #     x = self_ff(norm(x)) + x
+            
+            # # # lucidrains
+            # for self_attn, self_ff in self_attns:
+            #     x = gru(self_attn(norm(x)), x)
+            #     x = self_ff(norm(x)) + x
 
-            # # ours
+            # # # ours
             # for self_attn, self_ff in self_attns:
-            #     x = gru(self_attn(x), x)
+            #     x = gru(norm(self_attn(norm(x))))                
 
         if not exists(queries):
             return x
