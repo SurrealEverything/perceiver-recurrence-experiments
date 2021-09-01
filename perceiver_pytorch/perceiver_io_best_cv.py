@@ -186,7 +186,7 @@ class PerceiverIO(nn.Module):
         
         self.layers = nn.ModuleList([])
         for i in range(depth):
-            cache_args = {'_cache': weight_tie_layers and i>0}
+            cache_args = {'_cache': weight_tie_layers}
 
             self.layers.append(nn.ModuleList([
                 get_latent_attn(**cache_args),
@@ -215,7 +215,7 @@ class PerceiverIO(nn.Module):
         query_cross_attn, query_cross_ff, cross_attn, cross_ff = self.encoder_cross_attn
         x = query_cross_attn(input_queries, context = context, mask = mask) + input_queries
         x = query_cross_ff(x) + x
-        x = cross_attn(latents, context = x, mask = mask) + latents
+        x = cross_attn(latents, context = context, mask = mask) + latents
         x = cross_ff(x) + x
         
         for n in range(self.max_steps): 
@@ -224,7 +224,7 @@ class PerceiverIO(nn.Module):
             # if not exists(queries):
             #     latents = x
             # cross attend from decoder queries to latents
-            latents = decoder_cross_attn(output_queries, context = x)
+            latents = decoder_cross_attn(output_queries, context = x) # torch.squeeze()
             latents = decoder_ff(latents) + latents
             latents = rearrange(latents, 'b n d -> b (n d)')
             logits = to_logits(latents)
